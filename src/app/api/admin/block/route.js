@@ -18,7 +18,7 @@ export async function PUT(request) {
 
 
   try {
-    const setData = await env.IMG.prepare(`UPDATE imginfo SET rating = ${rating} WHERE url='${name}'`).run()
+    const setData = await env.IMG.prepare('UPDATE imginfo SET rating = ? WHERE url = ?').bind(rating, name).run()
     
     // Xóa cache cũ của ảnh tại Edge (Chiến thuật 2)
     try {

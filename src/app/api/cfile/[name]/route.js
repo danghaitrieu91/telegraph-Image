@@ -176,23 +176,20 @@ async function insertTgImgLog(DB, url, referer, ip, time) {
     .bind(url, referer, ip, time)
     .run();
 }
-// 插入 imginfo 记录
+// 插入 imginfo 记录 (Được tối ưu hóa bằng Parameterized Query để chống SQL Injection)
 async function insertImgInfo(DB, url, referer, ip, rating, time) {
   try {
     const instdata = await DB.prepare(
-      `INSERT INTO imginfo (url, referer, ip, rating, total, time)
-           VALUES ('${url}', '${referer}', '${ip}', ${rating}, 1, '${time}')`
-    ).run()
+      'INSERT INTO imginfo (url, referer, ip, rating, total, time) VALUES (?, ?, ?, ?, 1, ?)'
+    ).bind(url, referer, ip, rating, time).run()
   } catch (error) {
-
-  };
-
-
+    console.error("Lỗi insertImgInfo:", error);
+  }
 }
 
-// 从数据库获取鉴黄信息
+// 从数据库获取鉴黄信息 (Được tối ưu hóa bằng Parameterized Query)
 async function getRating(DB, url) {
-  const ps = DB.prepare(`SELECT rating FROM imginfo WHERE url='${url}'`);
+  const ps = DB.prepare('SELECT rating FROM imginfo WHERE url = ?').bind(url);
   const result = await ps.first();
   return result;
 }

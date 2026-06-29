@@ -19,7 +19,7 @@ export async function DELETE(request) {
   let { name } = await request.json()
   const { env, cf, ctx } = getRequestContext();
   try {
-    const setData = await env.IMG.prepare(`DELETE FROM imginfo WHERE url='${name}'`).run()
+    const setData = await env.IMG.prepare('DELETE FROM imginfo WHERE url = ?').bind(name).run()
     
     // Xóa cache cũ của ảnh tại Edge (Chiến thuật 2)
     try {
