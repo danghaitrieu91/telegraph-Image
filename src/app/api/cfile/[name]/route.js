@@ -14,11 +14,26 @@ export async function GET(request, { params }) {
 
   let req_url = new URL(request.url);
 
-
-
   const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || request.socket.remoteAddress;
   const clientIp = ip ? ip.split(',')[0].trim() : 'IP not found';
   const Referer = request.headers.get('Referer') || "Referer";
+
+  // 1. Kiểm tra điều kiện bypass DB (giống nguyên bản)
+  const isBypass = (Referer == req_url.origin + "/admin" || Referer == req_url.origin + "/list" || Referer == req_url.origin + "/" || !env.IMG);
+
+  // 2. Sử dụng Cache API tại Edge cho các GET request hợp lệ (Chiến thuật 2)
+  const cache = caches.default;
+  const cacheKey = new Request(req_url.toString(), {
+    method: 'GET',
+    headers: { 'Accept': request.headers.get('Accept') || '*/*' }
+  });
+
+  if (request.method === 'GET' && !isBypass) {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+  }
 
   try {
     const file_path = await getFile_path(env, name);
@@ -27,13 +42,12 @@ export async function GET(request, { params }) {
     if (file_path === "error") {
       return Response.json({
         status: 500,
-        message: ` ${error.message}`,
+        message: "Error fetching file path from Telegram",
         success: false
-      }
-        , {
-          status: 500,
-          headers: corsHeaders,
-        })
+      }, {
+        status: 500,
+        headers: corsHeaders,
+      })
 
     } else {
       const res = await fetch(`https://api.telegram.org/file/bot${env.TG_BOT_TOKEN}/${file_path}`, {
@@ -44,60 +58,73 @@ export async function GET(request, { params }) {
 
       if (res.ok) {
         const fileBuffer = await res.arrayBuffer();
-        if (Referer == req_url.origin + "/admin" || Referer == req_url.origin + "/list" || Referer == req_url.origin + "/" || !env.IMG) {
+        if (isBypass) {
           return new Response(fileBuffer, {
             headers: {
               "Content-Disposition": `attachment; filename=${fileName}`,
             },
           });
         } else {
-          const nowTime = await get_nowTime()
-          await insertTgImgLog(env.IMG, `/cfile/${name}`, Referer, clientIp, nowTime);
+          // Đã lược bỏ hoàn toàn insertTgImgLog và UPDATE total (Chiến thuật 3 - Option A)
           const rating = await getRating(env.IMG, `/cfile/${name}`);
+          let finalResponse;
 
           if (rating) {
-            try {
-              const setData = await env.IMG.prepare(`UPDATE imginfo SET total = total +1 WHERE url = '/cfile/${name}';`).run()
-            } catch (error) {
-              console.log(error);
-            }
             if (rating.rating == 3) {
-              return Response.redirect(`${req_url.origin}/img/blocked.png`, 302);
+              finalResponse = new Response(null, {
+                status: 302,
+                headers: {
+                  'Location': `${req_url.origin}/img/blocked.png`,
+                  'Cache-Control': 'public, max-age=86400'
+                }
+              });
             } else {
-              return new Response(fileBuffer, {
+              finalResponse = new Response(fileBuffer, {
                 headers: {
                   "Content-Disposition": `attachment; filename=${fileName}`,
+                  "Cache-Control": "public, max-age=86400"
                 },
               });
             }
           } else {
-            return Response.json({
-              status: 500,
-              message: ` ${error.message}`,
-              success: false
-            }
-              , {
-                status: 500,
-                headers: corsHeaders,
-              })
+            // Trả về file luôn nếu không tìm thấy rating (để tránh crash 500 như code cũ)
+            finalResponse = new Response(fileBuffer, {
+              headers: {
+                "Content-Disposition": `attachment; filename=${fileName}`,
+                "Cache-Control": "public, max-age=86400"
+              },
+            });
           }
 
+          // 3. Lưu response vào Cloudflare Cache (Chiến thuật 2)
+          if (request.method === 'GET' && (finalResponse.status === 200 || finalResponse.status === 302)) {
+            let responseToCache;
+            if (!finalResponse.headers.has('Cache-Control')) {
+              let newHeaders = new Headers(finalResponse.headers);
+              newHeaders.set('Cache-Control', 'public, max-age=86400');
+              responseToCache = new Response(finalResponse.clone().body, {
+                status: finalResponse.status,
+                statusText: finalResponse.statusText,
+                headers: newHeaders
+              });
+            } else {
+              responseToCache = finalResponse.clone();
+            }
+            ctx.waitUntil(cache.put(cacheKey, responseToCache));
+          }
+
+          return finalResponse;
         }
-
-
-
-
 
       } else {
         return Response.json({
           status: 500,
-          message: ` ${error.message}`,
+          message: "Error fetching file buffer from Telegram",
           success: false
-        }
-          , {
-            status: 500,
-            headers: corsHeaders,
-          })
+        }, {
+          status: 500,
+          headers: corsHeaders,
+        })
       }
     }
   } catch (error) {
@@ -105,14 +132,11 @@ export async function GET(request, { params }) {
       status: 500,
       message: ` ${error.message}`,
       success: false
-    }
-      , {
-        status: 500,
-        headers: corsHeaders,
-      })
+    }, {
+      status: 500,
+      headers: corsHeaders,
+    })
   }
-
-
 }
 
 

@@ -12,8 +12,6 @@ export async function GET(request, { params }) {
   const { name } = params
   let { env, cf, ctx } = getRequestContext();
 
-
-
   const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') ||  request.socket.remoteAddress;
   const clientIp = ip ? ip.split(',')[0].trim() : 'IP not found';
   const Referer = request.headers.get('Referer') || "Referer";
@@ -26,9 +24,45 @@ export async function GET(request, { params }) {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Max-Age': '86400', // 24小时
+        'Access-Control-Max-Age': '86400', // 24 giờ
       },
     });
+  }
+
+  // 1. Kiểm tra điều kiện bỏ qua DB (giống nguyên bản)
+  const isBypass = (Referer == req_url.origin + "/admin" || Referer == req_url.origin + "/list" || Referer == req_url.origin + "/") || !env.IMG;
+
+  if (isBypass) {
+    try {
+      const res = await fetch(`https://telegra.ph/file/${name}`, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      })
+      return res
+    } catch (error) {
+      return Response.json({
+        status: 500,
+        message: ` ${error.message}`,
+        success: false
+      }, {
+        status: 500,
+        headers: corsHeaders,
+      })
+    }
+  }
+
+  // 2. Sử dụng Cache API tại Edge cho các GET request hợp lệ (Chiến thuật 2)
+  const cache = caches.default;
+  const cacheKey = new Request(req_url.toString(), {
+    method: 'GET'
+  });
+
+  if (request.method === 'GET') {
+    const cachedResponse = await cache.match(cacheKey);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
   }
 
   try {
@@ -37,74 +71,85 @@ export async function GET(request, { params }) {
       headers: request.headers,
       body: request.body,
     })
-    if (Referer == req_url.origin + "/admin" || Referer == req_url.origin + "/list" || Referer == req_url.origin + "/") {
-      return res
-    } else if (!env.IMG) {
-      return res
+
+    const nowTime = await get_nowTime()
+    // Đã loại bỏ hoàn toàn insertTgImgLog và update total (Chiến thuật 3 - Option A)
+    const rating = await getRating(env.IMG, `/file/${name}`);
+    let finalResponse;
+
+    if (rating) {
+      if (rating.rating == 3) {
+        finalResponse = new Response(null, {
+          status: 302,
+          headers: {
+            'Location': `${req_url.origin}/img/blocked.png`,
+            'Cache-Control': 'public, max-age=86400'
+          }
+        });
+      } else {
+        finalResponse = res.clone();
+      }
     } else {
-      const nowTime = await get_nowTime()
-      await insertTgImgLog(env.IMG, `/file/${name}`, Referer, clientIp, nowTime);
-      const rating = await getRating(env.IMG, `/file/${name}`);
-      if (rating) {
+      if (env.PROXYALLIMG) {
         try {
-          // UPDATE imginfo SET total = total +2 WHERE url = '/file/d71ebe27cab32a2f61e25.png';
-          const setData = await env.IMG.prepare(`UPDATE imginfo SET total = total +1 WHERE url = '/file/${name}';`).run()
-          // console.log(setData);
+          const rating_index = await getModerateContentRating(env, `/file/${name}`)
+          const nowTime = await get_nowTime()
+          await insertImgInfo(env.IMG, `/file/${name}`, Referer, clientIp, rating_index, nowTime);
+     
+          if (rating_index == 3) {
+            finalResponse = new Response(null, {
+              status: 302,
+              headers: {
+                'Location': `${req_url.origin}/img/blocked.png`,
+                'Cache-Control': 'public, max-age=86400'
+              }
+            });
+          } else {
+            finalResponse = res.clone();
+          }
         } catch (error) {
-          console.log(error);
-        }
-        if (rating.rating == 3) {
-          return Response.redirect(`${req_url.origin}/img/blocked.png`, 302);
-        } else {
-          return res;
+          finalResponse = res.clone();
         }
       } else {
-        // if (1) {
-        if (env.PROXYALLIMG) {
-          try {
-            const rating_index = await getModerateContentRating(env, `/file/${name}`)
-            const nowTime = await get_nowTime()
-            // console.log( `/file/${name}`, Referer, clientIp, rating_index, nowTime);
-            await insertImgInfo(env.IMG, `/file/${name}`, Referer, clientIp, rating_index, nowTime);
-       
-
-            if (rating_index == 3) {
-              return Response.redirect(`${req_url.origin}/img/blocked.png`, 302);
-            } else {
-              return res;
-            }
-
-
-          } catch (error) {
-            // console.log("error"+ error);
-            return res;
+        finalResponse = new Response(null, {
+          status: 302,
+          headers: {
+            'Location': `https://telegra.ph/file/${name}`,
+            'Cache-Control': 'public, max-age=86400'
           }
-
-        } else {
-          return Response.redirect(`https://telegra.ph/file/${name}`, 302);
-        }
+        });
       }
-
     }
 
+    // 3. Lưu response vào Cloudflare Cache (Chiến thuật 2)
+    if (request.method === 'GET' && (finalResponse.status === 200 || finalResponse.status === 302)) {
+      let responseToCache;
+      if (!finalResponse.headers.has('Cache-Control')) {
+        let newHeaders = new Headers(finalResponse.headers);
+        newHeaders.set('Cache-Control', 'public, max-age=86400'); // Cache trong 1 ngày
+        responseToCache = new Response(finalResponse.clone().body, {
+          status: finalResponse.status,
+          statusText: finalResponse.statusText,
+          headers: newHeaders
+        });
+      } else {
+        responseToCache = finalResponse.clone();
+      }
+      ctx.waitUntil(cache.put(cacheKey, responseToCache));
+    }
 
-
-
-
+    return finalResponse;
 
   } catch (error) {
-    // console.log(error);
     return Response.json({
       status: 500,
       message: ` ${error.message}`,
       success: false
-    }
-      , {
-        status: 500,
-        headers: corsHeaders,
-      })
+    }, {
+      status: 500,
+      headers: corsHeaders,
+    })
   }
-
 }
 
 

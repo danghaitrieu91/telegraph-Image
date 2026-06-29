@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS tgimglog (
 	`ip` varchar(255),
 	`time` DATE
 );
+CREATE INDEX IF NOT EXISTS idx_tgimglog_url ON tgimglog(url);
+
 DROP TABLE IF EXISTS imginfo;
 CREATE TABLE IF NOT EXISTS imginfo (
 	`id` integer PRIMARY KEY NOT NULL,
@@ -16,4 +18,5 @@ CREATE TABLE IF NOT EXISTS imginfo (
 	`total` integer,
 	`time` DATE
 );
+CREATE INDEX IF NOT EXISTS idx_imginfo_url ON imginfo(url);
 

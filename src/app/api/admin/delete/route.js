@@ -20,6 +20,18 @@ export async function DELETE(request) {
   const { env, cf, ctx } = getRequestContext();
   try {
     const setData = await env.IMG.prepare(`DELETE FROM imginfo WHERE url='${name}'`).run()
+    
+    // Xóa cache cũ của ảnh tại Edge (Chiến thuật 2)
+    try {
+      const reqUrl = new URL(request.url);
+      const imageUrl = `${reqUrl.origin}${name}`;
+      const cache = caches.default;
+      const cacheKey = new Request(imageUrl, { method: 'GET' });
+      await cache.delete(cacheKey);
+    } catch (cacheError) {
+      console.error("Lỗi xóa cache:", cacheError);
+    }
+
     return Response.json({
       "code": 200,
       "success": true,
